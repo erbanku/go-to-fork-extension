@@ -15,31 +15,35 @@ async function init() {
     // Wait a bit for GitHub's dynamic content to load
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    // Remove any existing button
-    const existing = document.getElementById("go-to-fork-container");
-    if (existing) existing.remove();
+    // Remove any existing buttons
+    const existingFork = document.getElementById("go-to-fork-container");
+    if (existingFork) existingFork.remove();
+    const existingUpstream = document.getElementById(
+        "back-to-upstream-container"
+    );
+    if (existingUpstream) existingUpstream.remove();
 
     const url = window.location.href;
 
-    // Check if we're on a GitHub repo page (not on settings, issues, pulls, etc.)
+    // Check if we're on a GitHub repo page (matches all repo pages including issues, PRs, files, etc.)
     const repoMatch = url.match(
-        /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/?$/
+        /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/|$)/
     );
     if (!repoMatch) return;
 
     const [, owner, repo] = repoMatch;
 
-    // Don't run on your own repos or if already viewing a fork indicator
-    if (!owner || !repo || repo.includes("?") || repo.includes("#")) return;
+    // Don't run if missing owner/repo
+    if (!owner || !repo) return;
 
     try {
-        await injectForkLink(owner, repo);
+        await injectButtons(owner, repo);
     } catch (error) {
         console.log("Go to Fork extension error:", error);
     }
 }
 
-async function injectForkLink(owner, repo) {
+async function injectButtons(owner, repo) {
     // Get stored GitHub token
     const { githubToken } = await chrome.storage.sync.get("githubToken");
 
@@ -83,7 +87,14 @@ async function injectForkLink(owner, repo) {
 
     const repoData = await repoResp.json();
 
-    // Determine the upstream/source repository
+    // Check if current repo is a fork and show "Back to Upstream" button
+    if (repoData.fork && repoData.parent) {
+        const upstreamUrl = repoData.parent.html_url;
+        const upstreamFullName = repoData.parent.full_name;
+        addUpstreamButton(upstreamUrl, upstreamFullName);
+    }
+
+    // Determine the upstream/source repository for finding user's forks
     let sourceOwner = owner;
     let sourceRepo = repo;
 
@@ -92,10 +103,10 @@ async function injectForkLink(owner, repo) {
         sourceRepo = repoData.source.name;
     }
 
-    // Don't show button if we're already on our own fork
+    // Don't show "Go to Fork" button if we're on our own repo
     if (owner === currentUser) return;
 
-    // Find all forks
+    // Find all forks owned by the user
     const forks = await findAllForks(
         currentUser,
         sourceOwner,
@@ -397,6 +408,81 @@ function createForkButtonContainer(forks) {
         wrapper.appendChild(dropdown);
         container.appendChild(wrapper);
     }
+
+    return container;
+}
+
+function addUpstreamButton(upstreamUrl, upstreamFullName) {
+    // Prevent duplicate buttons
+    if (document.getElementById("back-to-upstream-container")) return;
+
+    const repoHeader =
+        document.querySelector(".AppHeader-context-full") ||
+        document.querySelector(".AppHeader") ||
+        document.querySelector("header");
+
+    if (!repoHeader) {
+        console.log("Go to Fork: Could not find header for upstream button");
+        return;
+    }
+
+    const container = createUpstreamButtonContainer(
+        upstreamUrl,
+        upstreamFullName
+    );
+
+    container.style.marginLeft = "16px";
+    container.style.display = "inline-block";
+
+    repoHeader.appendChild(container);
+    console.log("Go to Fork: Upstream button added successfully");
+}
+
+function createUpstreamButtonContainer(upstreamUrl, upstreamFullName) {
+    const container = document.createElement("div");
+    container.id = "back-to-upstream-container";
+    container.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    position: relative;
+    margin-right: 8px;
+    vertical-align: middle;
+  `;
+
+    const button = document.createElement("a");
+    button.href = upstreamUrl;
+    button.className = "btn btn-sm";
+    button.style.cssText = `
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 12px;
+      background-color: #0969da;
+      color: white !important;
+      border: 1px solid rgba(27, 31, 36, 0.15);
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      line-height: 20px;
+    `;
+    button.innerHTML = `
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm9.78-2.22-5.5 5.5a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l5.5-5.5a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042Z"></path>
+      </svg>
+      Back to Upstream
+    `;
+    button.title = `Go to upstream: ${upstreamFullName}`;
+    button.addEventListener("mouseover", () => {
+        button.style.backgroundColor = "#0860ca";
+    });
+    button.addEventListener("mouseout", () => {
+        button.style.backgroundColor = "#0969da";
+    });
+    container.appendChild(button);
 
     return container;
 }
