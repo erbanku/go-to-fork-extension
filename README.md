@@ -2,6 +2,8 @@
 
 A Chrome extension that shows a convenient link to your forked repository when viewing the upstream repository on GitHub.
 
+Chrome Web Store:
+https://chromewebstore.google.com/detail/github-go-to-fork/gmafgjjojobkaegbpnmkjlhjnfcbokdj
 ## Features
 
 - Automatic detection when viewing a repository you have forked
