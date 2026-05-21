@@ -72,23 +72,142 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v6
 
+            - name: Validate Chrome Web Store secrets
+              env:
+                  CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+                  CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+                  CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+                  CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+                  CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+              run: |
+                  set -euo pipefail
+
+                  missing=()
+                  for name in CHROME_EXTENSION_ID CHROME_PUBLISHER_ID CHROME_CLIENT_ID CHROME_CLIENT_SECRET CHROME_REFRESH_TOKEN; do
+                    if [ -z "${!name:-}" ]; then
+                      missing+=("$name")
+                    fi
+                  done
+
+                  if [ "${#missing[@]}" -gt 0 ]; then
+                    printf '::error::Missing required secret(s): %s\n' "${missing[*]}"
+                    exit 1
+                  fi
+
             - name: Zip extension source
               run: |
+                  set -euo pipefail
                   mkdir -p dist
                   cd src
                   zip -r ../dist/extension.zip .
                   cd ..
                   echo "Created dist/extension.zip"
 
+            - name: Refresh Chrome Web Store access token
+              id: chrome-token
+              env:
+                  CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+                  CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+                  CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+              run: |
+                  set -euo pipefail
+
+                  token_response=$(curl --silent --show-error --fail-with-body \
+                    -X POST https://oauth2.googleapis.com/token \
+                    --data-urlencode "client_id=${CHROME_CLIENT_ID}" \
+                    --data-urlencode "client_secret=${CHROME_CLIENT_SECRET}" \
+                    --data-urlencode "refresh_token=${CHROME_REFRESH_TOKEN}" \
+                    --data-urlencode "grant_type=refresh_token")
+
+                  access_token=$(jq -r '.access_token // empty' <<<"$token_response")
+                  if [ -z "$access_token" ]; then
+                    echo "::error::Chrome Web Store token refresh did not return an access token."
+                    echo "$token_response"
+                    exit 1
+                  fi
+
+                  echo "::add-mask::$access_token"
+                  echo "access_token=$access_token" >> "$GITHUB_OUTPUT"
+
             - name: Upload to Chrome Web Store
-              uses: mnao305/chrome-extension-upload@v5.0.0
-              with:
-                  file-path: dist/extension.zip
-                  extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
-                  client-id: ${{ secrets.CHROME_CLIENT_ID }}
-                  client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
-                  refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
-                  publish: true
+              env:
+                  ACCESS_TOKEN: ${{ steps.chrome-token.outputs.access_token }}
+                  CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+                  CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+              run: |
+                  set -euo pipefail
+
+                  item_name="publishers/${CHROME_PUBLISHER_ID}/items/${CHROME_EXTENSION_ID}"
+                  upload_url="https://chromewebstore.googleapis.com/upload/v2/${item_name}:upload"
+                  status_url="https://chromewebstore.googleapis.com/v2/${item_name}:fetchStatus"
+
+                  upload_response=$(curl --silent --show-error --fail-with-body \
+                    -X POST \
+                    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+                    -H "X-Goog-Upload-Protocol: raw" \
+                    -H "X-Goog-Upload-File-Name: extension.zip" \
+                    --data-binary @dist/extension.zip \
+                    "${upload_url}")
+
+                  upload_state=$(jq -r '.uploadState // empty' <<<"$upload_response")
+                  case "$upload_state" in
+                    SUCCEEDED)
+                      echo "Chrome Web Store upload succeeded."
+                      ;;
+                    IN_PROGRESS)
+                      echo "Chrome Web Store upload is processing; polling status."
+                      status_response=""
+                      for attempt in {1..60}; do
+                        sleep 5
+                        status_response=$(curl --silent --show-error --fail-with-body \
+                          -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+                          "${status_url}")
+                        upload_state=$(jq -r '.lastAsyncUploadState // empty' <<<"$status_response")
+                        if [ "$upload_state" != "IN_PROGRESS" ] && [ -n "$upload_state" ]; then
+                          break
+                        fi
+                      done
+
+                      if [ "$upload_state" != "SUCCEEDED" ]; then
+                        echo "::error::Chrome Web Store upload did not finish successfully."
+                        echo "$status_response"
+                        exit 1
+                      fi
+                      ;;
+                    *)
+                      echo "::error::Chrome Web Store upload failed."
+                      echo "$upload_response"
+                      exit 1
+                      ;;
+                  esac
+
+            - name: Publish to Chrome Web Store
+              env:
+                  ACCESS_TOKEN: ${{ steps.chrome-token.outputs.access_token }}
+                  CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+                  CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+              run: |
+                  set -euo pipefail
+
+                  item_name="publishers/${CHROME_PUBLISHER_ID}/items/${CHROME_EXTENSION_ID}"
+                  publish_response=$(curl --silent --show-error --fail-with-body \
+                    -X POST \
+                    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    -d '{"publishType":"DEFAULT_PUBLISH"}' \
+                    "https://chromewebstore.googleapis.com/v2/${item_name}:publish")
+
+                  publish_state=$(jq -r '.state // empty' <<<"$publish_response")
+                  case "$publish_state" in
+                    PENDING_REVIEW|PUBLISHED|PUBLISHED_TO_TESTERS|STAGED)
+                      echo "Chrome Web Store publish request accepted with state: $publish_state"
+                      ;;
+                    *)
+                      echo "::error::Chrome Web Store publish returned an unexpected state."
+                      echo "$publish_response"
+                      exit 1
+                      ;;
+                  esac
 
             - name: Create GitHub release
               uses: softprops/action-gh-release@v2.6.1
