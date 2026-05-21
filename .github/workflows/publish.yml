@@ -112,12 +112,24 @@ jobs:
               run: |
                   set -euo pipefail
 
-                  token_response=$(curl --silent --show-error --fail-with-body \
+                  token_response=$(curl --silent --show-error \
                     -X POST https://oauth2.googleapis.com/token \
                     --data-urlencode "client_id=${CHROME_CLIENT_ID}" \
                     --data-urlencode "client_secret=${CHROME_CLIENT_SECRET}" \
                     --data-urlencode "refresh_token=${CHROME_REFRESH_TOKEN}" \
-                    --data-urlencode "grant_type=refresh_token")
+                    --data-urlencode "grant_type=refresh_token" \
+                    --write-out "\n%{http_code}" || true)
+
+                  http_status=$(tail -n1 <<<"$token_response")
+                  token_response=$(head -n -1 <<<"$token_response")
+
+                  if [ "$http_status" != "200" ]; then
+                    google_error=$(jq -r '.error // "unknown"' <<<"$token_response" 2>/dev/null || echo "unknown")
+                    google_desc=$(jq -r '.error_description // ""' <<<"$token_response" 2>/dev/null || true)
+                    echo "::error::Token refresh failed (HTTP $http_status): $google_error — $google_desc"
+                    echo "$token_response"
+                    exit 1
+                  fi
 
                   access_token=$(jq -r '.access_token // empty' <<<"$token_response")
                   if [ -z "$access_token" ]; then
