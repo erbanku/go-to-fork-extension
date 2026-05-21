@@ -1,6 +1,6 @@
 name: Publish to Chrome Web Store
 
-# Third-party actions still declare Node 20; opt into the runner Node 24 runtime until they update.
+# softprops/action-gh-release still declares Node 20; opt into the runner Node 24 runtime until it updates.
 # See https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
 env:
     FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -81,14 +81,58 @@ jobs:
                   echo "Created dist/extension.zip"
 
             - name: Upload to Chrome Web Store
-              uses: mnao305/chrome-extension-upload@v5.0.0
-              with:
-                  file-path: dist/extension.zip
-                  extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
-                  client-id: ${{ secrets.CHROME_CLIENT_ID }}
-                  client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
-                  refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
-                  publish: true
+              env:
+                  CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+                  CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+                  CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+                  CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+              run: |
+                  set -euo pipefail
+
+                  # Exchange refresh token for an access token
+                  HTTP_CODE=$(curl -s \
+                    -o /tmp/token.json \
+                    -w "%{http_code}" \
+                    -X POST https://oauth2.googleapis.com/token \
+                    -d "client_id=${CHROME_CLIENT_ID}&client_secret=${CHROME_CLIENT_SECRET}&refresh_token=${CHROME_REFRESH_TOKEN}&grant_type=refresh_token")
+                  if [ "${HTTP_CODE}" != "200" ]; then
+                    echo "Token exchange failed (HTTP ${HTTP_CODE}): $(cat /tmp/token.json)" >&2
+                    exit 1
+                  fi
+                  ACCESS_TOKEN=$(jq -re '.access_token' /tmp/token.json)
+
+                  # Upload the extension zip to the Chrome Web Store
+                  HTTP_CODE=$(curl -s \
+                    -o /tmp/upload.json \
+                    -w "%{http_code}" \
+                    -X PUT \
+                    "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${CHROME_EXTENSION_ID}" \
+                    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+                    -H "x-goog-api-version: 2" \
+                    -H "Content-Type: application/zip" \
+                    --data-binary "@dist/extension.zip")
+                  echo "Upload (HTTP ${HTTP_CODE}): $(cat /tmp/upload.json)"
+                  if [ "${HTTP_CODE}" -ge 400 ]; then
+                    echo "Upload HTTP error (${HTTP_CODE})" >&2; exit 1
+                  fi
+                  STATE=$(jq -re '.uploadState // ""' /tmp/upload.json)
+                  if [ "${STATE}" = "FAILURE" ] || [ "${STATE}" = "NOT_FOUND" ]; then
+                    echo "Upload failed (${STATE})" >&2; exit 1
+                  fi
+
+                  # Publish the uploaded version
+                  HTTP_CODE=$(curl -s \
+                    -o /tmp/publish.json \
+                    -w "%{http_code}" \
+                    -X POST \
+                    "https://www.googleapis.com/chromewebstore/v1.1/items/${CHROME_EXTENSION_ID}/publish?publishTarget=default" \
+                    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+                    -H "x-goog-api-version: 2" \
+                    -H "Content-Length: 0")
+                  echo "Publish (HTTP ${HTTP_CODE}): $(cat /tmp/publish.json)"
+                  if [ "${HTTP_CODE}" -ge 400 ]; then
+                    echo "Publish HTTP error (${HTTP_CODE})" >&2; exit 1
+                  fi
 
             - name: Create GitHub release
               uses: softprops/action-gh-release@v2.6.1
