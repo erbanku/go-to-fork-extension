@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS = {
     showQuickAccessLinks: true,
     showForkUpstreamButtons: true,
     showRawPageButtons: true,
+    showCommitPRButtons: true,
     enableHotkeys: true,
     navHotkeys: [
         { keys: ['g', 'v'], name: 'Repo Owner Homepage', url: null, dynamic: true, urlType: 'owner-home' },
@@ -1741,6 +1742,322 @@ function autofillImportForm() {
 }
 
 // Initialize on page load
+// ===== COMMIT / PR DIFF+PATCH BUTTONS =====
+
+/**
+ * Parse a GitHub commit page URL.
+ * Matches: github.com/owner/repo/commit/SHA (with optional sub-path/query/hash)
+ * Returns { owner, repo, sha, baseUrl } or null.
+ */
+function parseCommitPageUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.hostname !== "github.com") return null;
+        const match = parsed.pathname.match(
+            /^\/([^/]+)\/([^/]+)\/commit\/([0-9a-f]{4,40})(?:\/.*)?$/i
+        );
+        if (!match) return null;
+        return {
+            owner: match[1],
+            repo: match[2],
+            sha: match[3],
+            baseUrl: `https://github.com/${match[1]}/${match[2]}/commit/${match[3]}`,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Parse a GitHub PR page URL.
+ * Matches: github.com/owner/repo/pull/NUMBER (with optional sub-path/query/hash)
+ * Returns { owner, repo, number, baseUrl } or null.
+ */
+function parsePRPageUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.hostname !== "github.com") return null;
+        const match = parsed.pathname.match(
+            /^\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:\/.*)?$/
+        );
+        if (!match) return null;
+        return {
+            owner: match[1],
+            repo: match[2],
+            number: match[3],
+            baseUrl: `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`,
+        };
+    } catch {
+        return null;
+    }
+}
+
+// Attribute used to mark commit links that already have shortcuts injected
+const COMMIT_SHORTCUT_ATTR = "data-gh-assistant-commit-shortcuts";
+// Class used on the injected <span> wrappers so we can remove them on navigation
+const COMMIT_SHORTCUT_CLASS = "gh-assistant-commit-shortcuts";
+
+let fileTreeCommitLinksRaf = null;
+
+/**
+ * Returns true when we are on a repo landing page or file-tree page —
+ * i.e. somewhere commit messages from the file browser are visible.
+ * Excludes commit detail, PR, blob, issues, and other sub-pages.
+ */
+function isRepoFileTreePage() {
+    if (parseCommitPageUrl(location.href)) return false;
+    if (parsePRPageUrl(location.href)) return false;
+    // Allow /owner/repo  and  /owner/repo/tree/...  only
+    return /^\/[^/]+\/[^/]+(?:\/tree(?:\/.*)?)?$/.test(location.pathname);
+}
+
+/**
+ * Append inline ".diff" (amber) and ".patch" (blue) text links immediately
+ * after every commit-message anchor in the file browser and latest-commit row.
+ */
+async function injectFileTreeCommitLinks() {
+    if (cachedSettings === null) await loadSettingsCache();
+    if (!cachedSettings.showCommitPRButtons) return;
+    if (!isRepoFileTreePage()) return;
+
+    const links = document.querySelectorAll(
+        `a[href*="/commit/"]:not([${COMMIT_SHORTCUT_ATTR}])`
+    );
+
+    links.forEach((link) => {
+        const rawHref = link.getAttribute("href") || "";
+        // Strip query params / hash before testing (latest-commit row sometimes has ?short_path=…)
+        const href = rawHref.split("?")[0].split("#")[0];
+        // Capture owner/repo/SHA; allow optional sub-paths after the SHA
+        const m = href.match(/^\/([^/]+)\/([^/]+)\/commit\/([0-9a-f]{4,40})(?:\/.*)?$/i);
+        if (!m) return;
+        // Skip the short-SHA badge links (text is just a hex string)
+        if (/^[0-9a-f]{4,40}$/i.test(link.textContent.trim())) return;
+
+        link.setAttribute(COMMIT_SHORTCUT_ATTR, "1");
+
+        // Always use the clean /owner/repo/commit/SHA base regardless of sub-paths
+        const baseUrl = `https://github.com/${m[1]}/${m[2]}/commit/${m[3]}`;
+        const MONO = "ui-monospace,SFMono-Regular,'SF Mono',Consolas,'Liberation Mono',Menlo,monospace";
+        const BASE_STYLE = `font-size:12px;font-weight:500;font-family:${MONO};text-decoration:none;`;
+
+        function makeLink(text, url, color, title) {
+            const a = document.createElement("a");
+            a.href = url;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.textContent = text;
+            a.title = title;
+            a.style.cssText = `${BASE_STYLE}color:${color};margin-left:5px;`;
+            a.addEventListener("mouseenter", () => { a.style.textDecoration = "underline"; });
+            a.addEventListener("mouseleave", () => { a.style.textDecoration = "none"; });
+            return a;
+        }
+
+        const wrap = document.createElement("span");
+        wrap.className = COMMIT_SHORTCUT_CLASS;
+        wrap.style.whiteSpace = "nowrap";
+        wrap.appendChild(makeLink(".diff",  baseUrl + ".diff",  "#a16207", "View as plain-text diff"));
+        wrap.appendChild(makeLink(".patch", baseUrl + ".patch", "#0969da", "Download as email-format patch"));
+
+        if (!link.parentNode) return;
+        link.insertAdjacentElement("afterend", wrap);
+    });
+}
+
+function scheduleFileTreeCommitLinks() {
+    if (fileTreeCommitLinksRaf !== null) return;
+    fileTreeCommitLinksRaf = requestAnimationFrame(() => {
+        fileTreeCommitLinksRaf = null;
+        injectFileTreeCommitLinks().catch((err) => {
+            console.error("GitHub Assistant: injectFileTreeCommitLinks error:", err);
+        });
+    });
+}
+
+// ===== END COMMIT / PR DIFF+PATCH BUTTONS =====
+
+// ===== COMMIT METADATA PANEL =====
+
+const COMMIT_META_ID = "gh-assistant-commit-meta";
+let commitMetaBtnRaf = null;
+
+/** Remove the modal panel and its backdrop. */
+function removeCommitMetaUI() {
+    document.getElementById(`${COMMIT_META_ID}-panel`)?.remove();
+    document.getElementById(`${COMMIT_META_ID}-overlay`)?.remove();
+}
+
+function scheduleCommitMetaButton() {
+    if (commitMetaBtnRaf !== null) return;
+    commitMetaBtnRaf = requestAnimationFrame(() => {
+        commitMetaBtnRaf = null;
+        injectCommitMetaButton().catch((err) =>
+            console.error("GitHub Assistant: injectCommitMetaButton error:", err)
+        );
+    });
+}
+
+/**
+ * Inject an inline "sig" text link on commit pages.
+ * Anchors to the clipboard-copy element for the commit SHA, which is always present.
+ */
+async function injectCommitMetaButton() {
+    if (cachedSettings === null) await loadSettingsCache();
+    if (!cachedSettings.showCommitPRButtons) return;
+
+    const commitInfo = parseCommitPageUrl(location.href);
+    if (!commitInfo) return;
+    if (document.getElementById(`${COMMIT_META_ID}-btn`)) return;
+
+    const { sha } = commitInfo;
+    // clipboard-copy for the SHA is the most stable anchor; fall back to time elements
+    const anchor =
+        document.querySelector(`clipboard-copy[value="${sha}"]`) ||
+        document.querySelector(`clipboard-copy[value="${sha.slice(0, 7)}"]`) ||
+        document.querySelector("relative-time, time-ago");
+    if (!anchor) return;
+
+    const btn = document.createElement("a");
+    btn.id = `${COMMIT_META_ID}-btn`;
+    btn.href = "#";
+    btn.textContent = "sig";
+    btn.title = "Show author / committer email and signature details";
+    btn.style.cssText =
+        "font-size:12px;font-weight:500;" +
+        "font-family:ui-monospace,SFMono-Regular,'SF Mono',Consolas,'Liberation Mono',Menlo,monospace;" +
+        "color:#6e7781;text-decoration:none;cursor:pointer;margin-left:8px;vertical-align:middle;";
+    btn.addEventListener("mouseenter", () => { btn.style.textDecoration = "underline"; });
+    btn.addEventListener("mouseleave", () => { btn.style.textDecoration = "none"; });
+    btn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        await showCommitMetaPanel(commitInfo);
+    });
+
+    anchor.insertAdjacentElement("afterend", btn);
+}
+
+/**
+ * Fetch commit details from the GitHub API and show them in a modal.
+ * Displays: author email, committer email, verification status/reason,
+ * signature type (PGP/GPG or SSH), and the raw signature in a collapsible block.
+ */
+async function showCommitMetaPanel({ owner, repo, sha }) {
+    removeCommitMetaUI();
+
+    // Backdrop
+    const overlay = document.createElement("div");
+    overlay.id = `${COMMIT_META_ID}-overlay`;
+    overlay.style.cssText =
+        "position:fixed;inset:0;background:rgba(0,0,0,0.32);z-index:9998;";
+    overlay.addEventListener("click", removeCommitMetaUI);
+    document.body.appendChild(overlay);
+
+    // Panel shell
+    const panel = document.createElement("div");
+    panel.id = `${COMMIT_META_ID}-panel`;
+    panel.style.cssText =
+        "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);" +
+        "background:#fff;border:1px solid #d0d7de;border-radius:10px;" +
+        "padding:20px 24px;z-index:9999;max-width:580px;width:90vw;" +
+        "box-shadow:0 8px 24px rgba(140,149,159,0.25);" +
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;" +
+        "font-size:13px;color:#24292f;overflow-y:auto;max-height:80vh;";
+    panel.innerHTML =
+        `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">` +
+            `<span style="font-weight:600;font-size:14px;">Commit Details</span>` +
+            `<button id="${COMMIT_META_ID}-close" style="background:none;border:none;cursor:pointer;` +
+                `font-size:20px;color:#57606a;padding:0;line-height:1;">&#x2715;</button>` +
+        `</div>` +
+        `<div id="${COMMIT_META_ID}-body"><span style="color:#57606a;font-size:12px;">Loading…</span></div>`;
+    document.body.appendChild(panel);
+
+    document.getElementById(`${COMMIT_META_ID}-close`).addEventListener("click", removeCommitMetaUI);
+    // Close on Escape
+    const onKeydown = (e) => {
+        if (e.key === "Escape") { removeCommitMetaUI(); document.removeEventListener("keydown", onKeydown); }
+    };
+    document.addEventListener("keydown", onKeydown);
+
+    const esc = (s = "") =>
+        String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    try {
+        const headers = { Accept: "application/vnd.github.v3+json" };
+        if (cachedGithubToken) headers.Authorization = `token ${cachedGithubToken}`;
+
+        const resp = await fetch(
+            `https://api.github.com/repos/${owner}/${repo}/commits/${sha}`,
+            { headers }
+        );
+        if (!resp.ok) {
+            throw new Error(`GitHub API ${resp.status} — ${await resp.text().catch(() => resp.statusText)}`);
+        }
+        const data = await resp.json();
+        const { author, committer, verification } = data.commit;
+        const v = verification ?? {};
+
+        // Detect PGP vs SSH signature
+        let sigType = null;
+        if (v.signature) {
+            if (v.signature.startsWith("-----BEGIN PGP"))      sigType = "PGP / GPG";
+            else if (v.signature.startsWith("-----BEGIN SSH")) sigType = "SSH";
+            else                                                sigType = "unknown";
+        }
+
+        const MONO = "font-family:ui-monospace,SFMono-Regular,'SF Mono',Consolas,monospace;";
+        const ROW  = "display:grid;grid-template-columns:110px 1fr;gap:8px;padding:7px 0;" +
+                     "border-bottom:1px solid #f0f3f6;align-items:start;";
+        const LBL  = "font-size:11px;font-weight:600;text-transform:uppercase;" +
+                     "letter-spacing:.4px;color:#57606a;padding-top:1px;";
+        const VAL  = `${MONO}font-size:12px;color:#24292f;word-break:break-all;`;
+
+        const row = (label, value) =>
+            `<div style="${ROW}"><span style="${LBL}">${label}</span><span style="${VAL}">${value}</span></div>`;
+
+        let html = row("Author",
+            `${esc(author.name)} <span style="color:#57606a;">&lt;${esc(author.email)}&gt;</span>`);
+        html += row("Author date", esc(author.date));
+
+        // Only show committer block when it differs from author
+        if (committer.name !== author.name || committer.email !== author.email) {
+            html += row("Committer",
+                `${esc(committer.name)} <span style="color:#57606a;">&lt;${esc(committer.email)}&gt;</span>`);
+            html += row("Committer date", esc(committer.date));
+        }
+
+        const vColor = v.verified ? "#1a7f37" : "#cf222e";
+        const vIcon  = v.verified ? "✓" : "✗";
+        html += row("Verified",
+            `<span style="color:${vColor};font-weight:600;">${vIcon}</span>&nbsp;${esc(v.reason) || "no signature"}`);
+
+        if (sigType) html += row("Sig type", sigType);
+
+        if (v.signature) {
+            html +=
+                `<div style="margin-top:12px;">` +
+                    `<details>` +
+                        `<summary style="cursor:pointer;font-size:11px;font-weight:600;color:#57606a;` +
+                            `text-transform:uppercase;letter-spacing:.4px;user-select:none;">` +
+                            `▶ Raw signature` +
+                        `</summary>` +
+                        `<pre style="margin:8px 0 0;background:#f6f8fa;padding:10px 12px;` +
+                            `border-radius:6px;font-size:11px;overflow-x:auto;white-space:pre-wrap;` +
+                            `word-break:break-all;max-height:240px;overflow-y:auto;` +
+                            `color:#24292f;border:1px solid #d0d7de;">${esc(v.signature)}</pre>` +
+                    `</details>` +
+                `</div>`;
+        }
+
+        document.getElementById(`${COMMIT_META_ID}-body`).innerHTML = html;
+    } catch (err) {
+        document.getElementById(`${COMMIT_META_ID}-body`).innerHTML =
+            `<span style="color:#cf222e;font-size:12px;">Error: ${esc(err.message)}</span>`;
+    }
+}
+
+// ===== END COMMIT METADATA PANEL =====
+
 // ===== RAW PAGE HANDLERS =====
 
 /**
@@ -2531,6 +2848,10 @@ scheduleQuickAccessButtonsInjection();
 schedulePackagesListEnhancement();
 autofillImportForm();
 initRawPage();
+scheduleFileTreeCommitLinks();
+[300, 800, 1500, 3000].forEach((ms) => setTimeout(scheduleFileTreeCommitLinks, ms));
+scheduleCommitMetaButton();
+[300, 800, 1500].forEach((ms) => setTimeout(scheduleCommitMetaButton, ms));
 initHotkeys();
 
 // Handle GitHub's SPA navigation with better detection
@@ -2555,6 +2876,14 @@ function handleNavigation() {
         document.getElementById("github-assistant-quick-access-container")?.remove();
         document.getElementById("go-to-source-container")?.remove();
         document.getElementById("gist-copy-latest-raw-container")?.remove();
+        document.getElementById(`${COMMIT_META_ID}-btn`)?.remove();
+        removeCommitMetaUI();
+        document
+            .querySelectorAll(`.${COMMIT_SHORTCUT_CLASS}`)
+            .forEach((node) => node.remove());
+        document
+            .querySelectorAll(`[${COMMIT_SHORTCUT_ATTR}]`)
+            .forEach((el) => el.removeAttribute(COMMIT_SHORTCUT_ATTR));
         document
             .querySelectorAll(`.${PACKAGE_METADATA_CLASS}`)
             .forEach((node) => node.remove());
@@ -2567,7 +2896,12 @@ function handleNavigation() {
             await init();
             autofillImportForm();
             initRawPage();
+            scheduleFileTreeCommitLinks();
+            scheduleCommitMetaButton();
             schedulePackagesListEnhancement();
+            // Staggered retries for lazily-loaded content
+            [300, 800, 1500, 3000].forEach((ms) => setTimeout(scheduleFileTreeCommitLinks, ms));
+            [300, 800, 1500].forEach((ms) => setTimeout(scheduleCommitMetaButton, ms));
         }, 50);
     }
 }
@@ -2592,6 +2926,7 @@ new MutationObserver(() => {
     mutationTimeout = setTimeout(() => {
         handleNavigation();
         schedulePackagesListEnhancement();
+        scheduleFileTreeCommitLinks();
     }, 100);
 }).observe(document, { subtree: true, childList: true });
 

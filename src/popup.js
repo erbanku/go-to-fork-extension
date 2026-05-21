@@ -32,11 +32,13 @@ const setupForkUpstream = document.getElementById(
     "setup-setting-fork-upstream"
 );
 const setupRawPage = document.getElementById("setup-setting-raw-page");
+const setupCommitPRButtons = document.getElementById("setup-setting-commit-pr-buttons");
 const setupHotkeys = document.getElementById("setup-setting-hotkeys");
 const configImportBtn = document.getElementById("setting-import-btn");
 const configQuickLinks = document.getElementById("setting-quick-links");
 const configForkUpstream = document.getElementById("setting-fork-upstream");
 const configRawPage = document.getElementById("setting-raw-page");
+const configCommitPRButtons = document.getElementById("setting-commit-pr-buttons");
 const configHotkeys = document.getElementById("setting-hotkeys");
 const editHotkeysBtn = document.getElementById("edit-hotkeys-btn");
 const hotkeyEditorDiv = document.getElementById("hotkeys-editor");
@@ -757,6 +759,7 @@ function applySettingsToCheckboxes(rawSettings) {
         showQuickAccessLinks: true,
         showForkUpstreamButtons: true,
         showRawPageButtons: true,
+        showCommitPRButtons: true,
         enableHotkeys: true,
         ...(rawSettings || {}),
     };
@@ -764,11 +767,13 @@ function applySettingsToCheckboxes(rawSettings) {
     setupQuickLinks.checked = settings.showQuickAccessLinks;
     setupForkUpstream.checked = settings.showForkUpstreamButtons;
     setupRawPage.checked = settings.showRawPageButtons;
+    setupCommitPRButtons.checked = settings.showCommitPRButtons;
     setupHotkeys.checked = settings.enableHotkeys;
     configImportBtn.checked = settings.showImportButton;
     configQuickLinks.checked = settings.showQuickAccessLinks;
     configForkUpstream.checked = settings.showForkUpstreamButtons;
     configRawPage.checked = settings.showRawPageButtons;
+    configCommitPRButtons.checked = settings.showCommitPRButtons;
     configHotkeys.checked = settings.enableHotkeys;
 }
 
@@ -807,6 +812,7 @@ Promise.all([
             showQuickAccessLinks: true,
             showForkUpstreamButtons: true,
             showRawPageButtons: true,
+            showCommitPRButtons: true,
             enableHotkeys: true,
         };
         const settings = {
@@ -819,10 +825,12 @@ Promise.all([
         setupQuickLinks.checked = settings.showQuickAccessLinks;
         setupForkUpstream.checked = settings.showForkUpstreamButtons;
         setupRawPage.checked = settings.showRawPageButtons;
+        setupCommitPRButtons.checked = settings.showCommitPRButtons;
         configImportBtn.checked = settings.showImportButton;
         configQuickLinks.checked = settings.showQuickAccessLinks;
         configForkUpstream.checked = settings.showForkUpstreamButtons;
         configRawPage.checked = settings.showRawPageButtons;
+        configCommitPRButtons.checked = settings.showCommitPRButtons;
         setupHotkeys.checked = settings.enableHotkeys;
         configHotkeys.checked = settings.enableHotkeys;
 
@@ -1144,6 +1152,7 @@ function saveSettings() {
         showQuickAccessLinks: setupQuickLinks.checked,
         showForkUpstreamButtons: setupForkUpstream.checked,
         showRawPageButtons: setupRawPage.checked,
+        showCommitPRButtons: setupCommitPRButtons.checked,
         enableHotkeys: setupHotkeys.checked,
     };
     chrome.storage.sync.set({ extensionSettings: settings });
@@ -1155,6 +1164,7 @@ function saveConfiguredSettings() {
         showQuickAccessLinks: configQuickLinks.checked,
         showForkUpstreamButtons: configForkUpstream.checked,
         showRawPageButtons: configRawPage.checked,
+        showCommitPRButtons: configCommitPRButtons.checked,
         enableHotkeys: configHotkeys.checked,
     };
     chrome.storage.sync.set({ extensionSettings: settings });
@@ -1165,6 +1175,7 @@ setupImportBtn.addEventListener("change", saveSettings);
 setupQuickLinks.addEventListener("change", saveSettings);
 setupForkUpstream.addEventListener("change", saveSettings);
 setupRawPage.addEventListener("change", saveSettings);
+setupCommitPRButtons.addEventListener("change", saveSettings);
 setupHotkeys.addEventListener("change", saveSettings);
 
 // Configured view settings
@@ -1172,6 +1183,7 @@ configImportBtn.addEventListener("change", saveConfiguredSettings);
 configQuickLinks.addEventListener("change", saveConfiguredSettings);
 configForkUpstream.addEventListener("change", saveConfiguredSettings);
 configRawPage.addEventListener("change", saveConfiguredSettings);
+configCommitPRButtons.addEventListener("change", saveConfiguredSettings);
 configHotkeys.addEventListener("change", saveConfiguredSettings);
 
 // ===============================================
